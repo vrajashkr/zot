@@ -88,7 +88,13 @@ jobs:
       #     sleep 10
       #     curl -X POST -H "Content-Type: application/json" -d @.pkg/debug/githubWorkflows/introspection-query.json http://localhost:5000/v2/_zot/ext/search | jq > bin/zot-gql-introspection-result.json
       #     pkill zot
-
+      - if: github.event_name == 'release' && github.event.action == 'published'
+        name: Compute checksums
+        run: |
+          cd "$GITHUB_WORKSPACE/bin"
+          for artifact in ./z* ; do
+            sha256sum "$artifact" > "$artifact.sha256sum"
+          done
       - if: github.event_name == 'release' && github.event.action == 'published'
         name: Publish artifacts on releases
         uses: svenstaro/upload-release-action@v2
