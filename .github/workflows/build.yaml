@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        os: [linux, darwin, freebsd]
+        os: [linux]
         arch: [amd64, arm64]
     steps:
       - name: Check out source code
@@ -76,18 +76,18 @@ jobs:
         run: |
           echo "Building for $OS:$ARCH"
           cd $GITHUB_WORKSPACE
-          make binary binary-minimal binary-debug cli bench exporter-minimal
+          make binary-minimal
         env:
           OS: ${{ matrix.os }}
           ARCH: ${{ matrix.arch }}
 
-      - name: Generate GraphQL Introspection JSON on Release
-        if: github.event_name == 'release' && github.event.action == 'published' && matrix.os == 'linux' && matrix.arch == 'amd64'
-        run: |
-          bin/zot-linux-amd64 serve examples/config-search.json &
-          sleep 10
-          curl -X POST -H "Content-Type: application/json" -d @.pkg/debug/githubWorkflows/introspection-query.json http://localhost:5000/v2/_zot/ext/search | jq > bin/zot-gql-introspection-result.json
-          pkill zot
+      # - name: Generate GraphQL Introspection JSON on Release
+      #   if: github.event_name == 'release' && github.event.action == 'published' && matrix.os == 'linux' && matrix.arch == 'amd64'
+      #   run: |
+      #     bin/zot-linux-amd64 serve examples/config-search.json &
+      #     sleep 10
+      #     curl -X POST -H "Content-Type: application/json" -d @.pkg/debug/githubWorkflows/introspection-query.json http://localhost:5000/v2/_zot/ext/search | jq > bin/zot-gql-introspection-result.json
+      #     pkill zot
 
       - if: github.event_name == 'release' && github.event.action == 'published'
         name: Publish artifacts on releases
