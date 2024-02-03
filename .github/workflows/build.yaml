@@ -104,13 +104,24 @@ jobs:
     if: github.event_name == 'release' && github.event.action == 'published'
     runs-on: ubuntu-latest
     steps:
-      - name: Generate Artifact Hashes
-        uses: MCJack123/ghaction-generate-release-hashes@v3
+      - name: Download Release Artifacts 
+        uses: robinraju/release-downloader@v1.9
         with:
-          hash-type: sha256
-          file-name: checksums.txt
-          get-assets: true
-      - name: Ls workdir
+          tag: ${{ github.ref }}
+          fileName: z*
+          tarBall: false
+          zipBall: false
+          out-file-path: "bin"
+          extract: false
+      - name: Tree workdir
+        run: tree
+      - name: Generate checksum
+        uses: jmgilman/actions-generate-checksum@v1
+        with:
+          patterns: bin/z*
+          method: sha256
+          output: checksums.txt
+      - name: ls workdir
         run: ls -lart
       - name: Publish checksums on releases
         uses: svenstaro/upload-release-action@v2
