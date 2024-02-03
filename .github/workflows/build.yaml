@@ -109,17 +109,18 @@ jobs:
         with:
           pattern: z*
           path: bin
+      - name: Ls workdir
+        run: ls -lart
       - name: Generate checksum
         uses: jmgilman/actions-generate-checksum@v1
         with:
-          patterns: |
-            bin/z*
+          patterns: bin/z*
           method: sha256
           output: checksums.txt
-      - name: Upload checksum file
-        uses: svenstaro/upload-release-action@v2
+      - name: Ls workdir
+        run: ls -lart
+      - name: Upload Checksum file
+        uses: actions/upload-artifact@v4
         with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: checksums.txt
-          tag: ${{ github.ref }}
-          overwrite: true
+          name: checksums.txt
+          path: checksums.txt
