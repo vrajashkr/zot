@@ -89,26 +89,25 @@ jobs:
       #     curl -X POST -H "Content-Type: application/json" -d @.pkg/debug/githubWorkflows/introspection-query.json http://localhost:5000/v2/_zot/ext/search | jq > bin/zot-gql-introspection-result.json
       #     pkill zot
       - if: github.event_name == 'release' && github.event.action == 'published'
-        name: Publish artifacts on releases
-        uses: svenstaro/upload-release-action@v2
+        name: Archive workflow artifacts
+        uses: actions/upload-artifact@v4
         with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: bin/z*
-          tag: ${{ github.ref }}
+          path: bin/z*
+          retention-days: 1
           overwrite: true
-          file_glob: true
 
-  release-checksums:
-    name: Release Artifact Checksums
+  release-artifacts:
+    name: Release Artifacts
     needs: build-arch
     if: github.event_name == 'release' && github.event.action == 'published'
     runs-on: ubuntu-latest
     steps:
-      - name: Download release artifacts
+      - name: Download workflow artifacts
         uses: actions/download-artifact@v4
         with:
           pattern: z*
           path: bin
+          merge-multiple: true
       - name: Ls workdir
         run: ls -lart
       - name: Generate checksum
@@ -119,8 +118,18 @@ jobs:
           output: checksums.txt
       - name: Ls workdir
         run: ls -lart
-      - name: Upload Checksum file
-        uses: actions/upload-artifact@v4
+      - name: Publish artifacts on releases
+        uses: svenstaro/upload-release-action@v2
         with:
-          name: checksums.txt
-          path: checksums.txt
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: bin/z*
+          tag: ${{ github.ref }}
+          overwrite: true
+          file_glob: true
+      - name: Publish checksums on releases
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: checksums.txt
+          tag: ${{ github.ref }}
+          overwrite: true
