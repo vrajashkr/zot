@@ -111,16 +111,11 @@ jobs:
         uses: robinraju/release-downloader@v1.9
         with:
           tag: ${{ github.ref_name }}
-          token: ${{ secrets.GITHUB_TOKEN }}
           fileName: "z*"
-          tarBall: false
-          zipBall: false
-          out-file-path: "bin"
-          extract: false
       - name: Generate checksum
         uses: jmgilman/actions-generate-checksum@v1
         with:
-          patterns: bin/z*
+          patterns: z*
           method: sha256
           output: checksums.txt
       - name: Publish checksums on releases
