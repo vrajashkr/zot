@@ -1,10 +1,10 @@
 on:
-  push:
-    branches:
-      - main
-  pull_request:
-    branches:
-      - main
+  # push:
+  #   branches:
+  #     - main
+  # pull_request:
+  #   branches:
+  #     - main
   release:
     types:
       - published
@@ -108,7 +108,8 @@ jobs:
         uses: robinraju/release-downloader@v1.9
         with:
           tag: ${{ github.ref }}
-          fileName: z*
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fileName: "z*"
           tarBall: false
           zipBall: false
           out-file-path: "bin"
