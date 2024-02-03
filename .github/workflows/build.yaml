@@ -103,6 +103,9 @@ jobs:
     needs: build-arch
     if: github.event_name == 'release' && github.event.action == 'published'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
     steps:
       - name: Download Release Artifacts 
         uses: robinraju/release-downloader@v1.9
@@ -114,16 +117,12 @@ jobs:
           zipBall: false
           out-file-path: "bin"
           extract: false
-      - name: Tree workdir
-        run: tree
       - name: Generate checksum
         uses: jmgilman/actions-generate-checksum@v1
         with:
           patterns: bin/z*
           method: sha256
           output: checksums.txt
-      - name: ls workdir
-        run: ls -lart
       - name: Publish checksums on releases
         uses: svenstaro/upload-release-action@v2
         with:
