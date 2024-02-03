@@ -105,12 +105,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download Release Artifacts 
-        uses: dsaltares/fetch-gh-release-asset@1.1.1
-        with:
-          version: tags/${{ github.ref }}
-          file: 'z*'
-          regex: true
-          target: 'bin/'
+        run: |
+          mkdir -p bin
+          gh release download ${{ github.ref }} --pattern "z*" --dir 'bin'
       - name: Tree workdir
         run: tree
       - name: Generate checksum
