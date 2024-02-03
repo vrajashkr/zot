@@ -105,9 +105,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download Release Artifacts 
-        run: |
-          mkdir -p bin
-          GH_TOKEN=${{ secrets.GITHUB_TOKEN }} gh release download ${{ github.ref }} --pattern "z*" --dir 'bin'
+        uses: robinraju/release-downloader@v1.9
+        with:
+          tag: ${{ github.ref_name }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fileName: "z*"
+          tarBall: false
+          zipBall: false
+          out-file-path: "bin"
+          extract: false
       - name: Tree workdir
         run: tree
       - name: Generate checksum
