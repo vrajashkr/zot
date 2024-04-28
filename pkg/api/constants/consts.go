@@ -31,4 +31,6 @@ const (
 	DeletePermission = "delete"
 	// behaviour actions.
 	DetectManifestCollisionPermission = "detectManifestCollision"
+	// Log String keys.
+	RepositoryLogKey = "repository"
 )

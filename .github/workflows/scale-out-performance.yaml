@@ -1,10 +1,9 @@
-name: "Ecosystem client tools"
+name: "Scale-out performance"
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
-  pull_request:
-    branches: [main]
   release:
     types:
       - published
@@ -12,8 +11,8 @@ on:
 permissions: read-all
 
 jobs:
-  client-tools:
-    name: Check client tools
+  scale-out-performance:
+    name: Cloud scale-out performance
     runs-on: ubuntu-latest-16-cores
     steps:
       - uses: actions/checkout@v4
@@ -34,27 +33,7 @@ jobs:
           make bin/skopeo
           sudo cp bin/skopeo /usr/bin
           skopeo -v
-          # install cri-o (for crictl)
-          OS=xUbuntu_22.04
-          CRIO_VERSION=1.26
-          echo "deb https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable/$OS/ /"|sudo tee /etc/apt/sources.list.d/devel:kubic:libcontainers:stable.list
-          echo "deb https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable:/cri-o:/$CRIO_VERSION/$OS/ /"|sudo tee /etc/apt/sources.list.d/devel:kubic:libcontainers:stable:cri-o:$CRIO_VERSION.list
-          curl -L https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable:/cri-o:/$CRIO_VERSION/$OS/Release.key | sudo apt-key add -
-          curl -L https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable/$OS/Release.key | sudo apt-key add -
-          sudo apt update
-          sudo apt install -y cri-o cri-o-runc
-          sudo systemctl enable crio.service
-          sudo systemctl start crio.service
-          sudo chmod 0777 /var/run/crio/crio.sock
-          # install dex
-          git clone https://github.com/dexidp/dex.git
-          cd dex/
-          make bin/dex
-          ./bin/dex serve $GITHUB_WORKSPACE/test/dex/config-dev.yaml &
           cd $GITHUB_WORKSPACE
-      - name: Run CI tests
-        run: |
-          make run-blackbox-ci
       - name: Log in to GitHub Docker Registry
         uses: docker/login-action@v3
         with:
@@ -74,15 +53,9 @@ jobs:
           echo "Waiting for LocalStack startup..."  # Wait 30 seconds for the LocalStack container
           localstack wait -t 30                     # to become ready before timing out
           echo "Startup complete"
-      - name: Run cloud-only tests
+      - name: Run scale-out high scale performance tests
         run: |
-          make run-blackbox-cloud-ci
-        env:
-          AWS_ACCESS_KEY_ID: fake
-          AWS_SECRET_ACCESS_KEY: fake
-      - name: Run scale-out tests
-        run: |
-          make run-scale-out-tests
+          make run-scale-out-high-scale-tests
         env:
           AWS_ACCESS_KEY_ID: fake
           AWS_SECRET_ACCESS_KEY: fake
