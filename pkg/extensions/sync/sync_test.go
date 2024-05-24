@@ -729,6 +729,183 @@ func TestOnDemand(t *testing.T) {
 	})
 }
 
+func TestOnDemandWithScaleOutCluster(t *testing.T) {
+	Convey("Given 2 downstream zots and one upstream", t, func() {
+		sctlr, srcBaseURL, _, _, srcClient := makeUpstreamServer(t, false, false)
+		scm := test.NewControllerManager(sctlr)
+		scm.StartAndWait(sctlr.Config.HTTP.Port)
+		defer scm.StopServer()
+
+		// sync config for both downstreams.
+		tlsVerify := false
+		regex := ".*"
+		semver := true
+		syncRegistryConfig := syncconf.RegistryConfig{
+			Content: []syncconf.Content{
+				{
+					Prefix: testImage,
+					Tags: &syncconf.Tags{
+						Regex:  &regex,
+						Semver: &semver,
+					},
+				},
+				{
+					Prefix: testCveImage,
+					Tags: &syncconf.Tags{
+						Regex:  &regex,
+						Semver: &semver,
+					},
+				},
+			},
+			URLs:      []string{srcBaseURL},
+			TLSVerify: &tlsVerify,
+			CertDir:   "",
+			OnDemand:  true,
+		}
+
+		defaultVal := true
+		syncConfig := &syncconf.Config{
+			Enable:     &defaultVal,
+			Registries: []syncconf.RegistryConfig{syncRegistryConfig},
+		}
+
+		dctrl1, dctrl1BaseURL, _, dstClient1 := makeDownstreamServer(t, false, syncConfig)
+		dctrl1Scm := test.NewControllerManager(dctrl1)
+
+		dctrl2, dctrl1BaseURL, _, dstClient2 := makeDownstreamServer(t, false, syncConfig)
+		dctrl2Scm := test.NewControllerManager(dctrl2)
+
+		// add the cluster config to both downstream instances.
+		clusterCfg := config.ClusterConfig{
+			Members: []string{
+				fmt.Sprintf("127.0.0.1:%s", dctrl1.Config.HTTP.Port),
+				fmt.Sprintf("127.0.0.1:%s", dctrl2.Config.HTTP.Port),
+			},
+			HashKey: "loremipsumdolors",
+		}
+		dctrl1.Config.Cluster = &clusterCfg
+		dctrl2.Config.Cluster = &clusterCfg
+
+		dctrl1Scm.StartAndWait(dctrl1.Config.HTTP.Port)
+		defer dctrl1Scm.StopServer()
+
+		dctrl2Scm.StartAndWait(dctrl2.Config.HTTP.Port)
+		defer dctrl2Scm.StopServer()
+
+		Convey("Verify source and destination instances are up", func() {
+			clients := []*resty.Client{srcClient, dstClient1, dstClient2}
+			baseURLs := []string{srcBaseURL, dctrl1BaseURL, dctrl1BaseURL}
+
+			for clientIdx, client := range clients {
+				resp, err := client.R().Get(fmt.Sprintf("%s/v2/", baseURLs[clientIdx]))
+				So(err, ShouldBeNil)
+				So(resp, ShouldNotBeNil)
+				So(resp.StatusCode(), ShouldEqual, http.StatusOK)
+			}
+		})
+
+		Convey("Catalogs for each downstream should be empty at the start", func() {
+			clients := []*resty.Client{dstClient1, dstClient2}
+			baseURLs := []string{dctrl1BaseURL, dctrl1BaseURL}
+
+			for clientIdx, client := range clients {
+				resp, err := client.R().Get(fmt.Sprintf("%s/v2/catalog", baseURLs[clientIdx]))
+				So(err, ShouldBeNil)
+				So(resp, ShouldNotBeNil)
+				So(resp.StatusCode(), ShouldEqual, http.StatusOK)
+
+				var catalogData catalog
+				err = json.Unmarshal(resp.Body(), &catalogData)
+				So(err, ShouldBeNil)
+				So(catalogData.Repositories, ShouldBeEmpty)
+			}
+		})
+
+		Convey("Tags list for test image should return 404", func() {
+			// only hit one instance as the request will get proxied anyway.
+			resp, err := dstClient1.R().Get(
+				fmt.Sprintf("%s/v2/%s/tags/list", dctrl1BaseURL, testImage),
+			)
+			So(err, ShouldBeNil)
+			So(resp, ShouldNotBeNil)
+			So(resp.StatusCode(), ShouldEqual, http.StatusNotFound)
+		})
+
+		Convey("Tags List for test CVE image should return 404", func() {
+			// only hit one instance as the request will get proxied anyway.
+			resp, err := dstClient1.R().Get(
+				fmt.Sprintf("%s/v2/%s/tags/list", dctrl1BaseURL, testCveImage),
+			)
+			So(err, ShouldBeNil)
+			So(resp, ShouldNotBeNil)
+			So(resp.StatusCode(), ShouldEqual, http.StatusNotFound)
+		})
+
+		Convey("Should successfully sync test image and when trying to load manifest", func() {
+			// only hit one instance as the request will get proxied anyway.
+			resp, err := dstClient1.R().Get(
+				fmt.Sprintf("%s/v2/%s/manifests/%s", dctrl1BaseURL, testImage, testImageTag),
+			)
+			So(err, ShouldBeNil)
+			So(resp.StatusCode(), ShouldEqual, http.StatusOK)
+		})
+
+		Convey("Tags list for test image should return data after the sync", func() {
+			// only hit one instance as the request will get proxied anyway.
+			// get manifest is hit with a GET request.
+			resp, err := dstClient1.R().Get(
+				fmt.Sprintf("%s/v2/%s/tags/list", dctrl1BaseURL, testImage),
+			)
+			So(err, ShouldBeNil)
+			So(resp, ShouldNotBeNil)
+			So(resp.StatusCode(), ShouldEqual, http.StatusOK)
+			var tags TagsList
+			err = json.Unmarshal(resp.Body(), &tags)
+			So(err, ShouldBeNil)
+			So(tags, ShouldEqual, TagsList{
+				Name: testImage,
+				Tags: []string{testImageTag},
+			})
+		})
+
+		Convey("Should successfully sync test vulnerable image and when trying to check manifest", func() {
+			// only hit one instance as the request will get proxied anyway.
+			// check manifest is hit with a HEAD or OPTIONS request.
+			resp, err := dstClient1.R().Head(
+				fmt.Sprintf("%s/v2/%s/manifests/%s", dctrl1BaseURL, testCveImage, testImageTag),
+			)
+			So(err, ShouldBeNil)
+			So(resp.StatusCode(), ShouldEqual, http.StatusOK)
+		})
+
+		Convey("Tags List for test CVE image should return data after the sync", func() {
+			// only hit one instance as the request will get proxied anyway.
+			// get manifest is hit with a GET request.
+			resp, err := dstClient1.R().Get(
+				fmt.Sprintf("%s/v2/%s/tags/list", dctrl1BaseURL, testImage),
+			)
+			So(err, ShouldBeNil)
+			So(resp, ShouldNotBeNil)
+			So(resp.StatusCode(), ShouldEqual, http.StatusOK)
+			var tags TagsList
+			err = json.Unmarshal(resp.Body(), &tags)
+			So(err, ShouldBeNil)
+			So(tags, ShouldEqual, TagsList{
+				Name: testCveImage,
+				Tags: []string{testImageTag},
+			})
+		})
+
+		Convey("Catalog for only one downstream should have the data for test image", func() {
+
+		})
+
+		Convey("Catalog for only one downstream should have the data for the test cve image", func() {
+
+		})
+	})
+}
+
 func TestSyncReferenceInLoop(t *testing.T) {
 	Convey("Verify sync doesn't end up in an infinite loop when syncing image references", t, func() {
 		sctlr, srcBaseURL, srcDir, _, _ := makeUpstreamServer(t, false, false)
@@ -1414,6 +1591,121 @@ func TestPeriodically(t *testing.T) {
 			So(destTagsList, ShouldNotResemble, srcTagsList)
 
 			waitSyncFinish(dctlr.Config.Log.Output)
+		})
+	})
+}
+
+func TestPeriodicallyWithScaleOutCluster(t *testing.T) {
+	Convey("Given a zot instance with periodic sync enabled", t, func() {
+		updateDuration, _ := time.ParseDuration("30m")
+
+		sctlr, srcBaseURL, _, _, srcClient := makeUpstreamServer(t, false, false)
+
+		scm := test.NewControllerManager(sctlr)
+		scm.StartAndWait(sctlr.Config.HTTP.Port)
+		defer scm.StopServer()
+
+		regex := ".*"
+		semver := true
+		var tlsVerify bool
+
+		maxRetries := 1
+		delay := 1 * time.Second
+
+		syncRegistryConfig := syncconf.RegistryConfig{
+			Content: []syncconf.Content{
+				{
+					Prefix: testImage,
+					Tags: &syncconf.Tags{
+						Regex:  &regex,
+						Semver: &semver,
+					},
+				},
+				{
+					Prefix: testCveImage,
+					Tags: &syncconf.Tags{
+						Regex:  &regex,
+						Semver: &semver,
+					},
+				},
+			},
+			URLs:         []string{srcBaseURL},
+			PollInterval: updateDuration,
+			TLSVerify:    &tlsVerify,
+			CertDir:      "",
+			MaxRetries:   &maxRetries,
+			RetryDelay:   &delay,
+		}
+
+		defaultVal := true
+		syncConfig := &syncconf.Config{
+			Enable:     &defaultVal,
+			Registries: []syncconf.RegistryConfig{syncRegistryConfig},
+		}
+
+		dctlr, destBaseURL, _, destClient := makeDownstreamServer(t, false, syncConfig)
+
+		// add scale out cluster config.
+		// we don't need to start multiple downstream instances as we want to just check that
+		// a given downstream instance skips images that it does not manage.
+
+		clusterCfg := config.ClusterConfig{
+			Members: []string{
+				"127.0.0.1:9000",
+				fmt.Sprintf("127.0.0.1:%s", dctlr.Config.HTTP.Port),
+			},
+			HashKey: "loremipsumdolors",
+		}
+		dctlr.Config.Cluster = &clusterCfg
+
+		dcm := test.NewControllerManager(dctlr)
+		dcm.StartAndWait(dctlr.Config.HTTP.Port)
+		defer dcm.StopServer()
+
+		Convey("Should sync one of the images from the upstream", func() {
+			var srcTagsList TagsList
+			var destTagsList TagsList
+
+			resp, _ := srcClient.R().Get(srcBaseURL + "/v2/" + testImage + "/tags/list")
+			So(resp, ShouldNotBeNil)
+			So(resp.StatusCode(), ShouldEqual, http.StatusOK)
+
+			err := json.Unmarshal(resp.Body(), &srcTagsList)
+			if err != nil {
+				panic(err)
+			}
+
+			for {
+				resp, err = destClient.R().Get(destBaseURL + "/v2/" + testImage + "/tags/list")
+				if err != nil {
+					panic(err)
+				}
+
+				err = json.Unmarshal(resp.Body(), &destTagsList)
+				if err != nil {
+					panic(err)
+				}
+
+				if len(destTagsList.Tags) > 0 {
+					break
+				}
+
+				time.Sleep(500 * time.Millisecond)
+			}
+
+			So(destTagsList, ShouldResemble, srcTagsList)
+		})
+
+		Convey("Should not sync the other image that is not managed by the instance", func() {
+			resp, err := srcClient.R().Get(srcBaseURL + "/v2/" + testCveImage + "/tags/list")
+			So(err, ShouldBeNil)
+			So(resp, ShouldNotBeNil)
+			So(resp.StatusCode(), ShouldEqual, http.StatusOK)
+
+			var catalogData catalog
+			err = json.Unmarshal(resp.Body(), &catalogData)
+			So(err, ShouldBeNil)
+			So(catalogData.Repositories, ShouldBeEmpty)
 		})
 	})
 }
