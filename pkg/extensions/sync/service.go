@@ -10,9 +10,12 @@ import (
 
 	"github.com/containers/common/pkg/retry"
 	"github.com/containers/image/v5/copy"
+	"github.com/dchest/siphash"
 	"github.com/opencontainers/go-digest"
 
 	zerr "zotregistry.dev/zot/errors"
+	"zotregistry.dev/zot/pkg/api/config"
+	"zotregistry.dev/zot/pkg/api/constants"
 	"zotregistry.dev/zot/pkg/common"
 	syncconf "zotregistry.dev/zot/pkg/extensions/config/sync"
 	client "zotregistry.dev/zot/pkg/extensions/sync/httpclient"
@@ -25,6 +28,7 @@ import (
 type BaseService struct {
 	config          syncconf.RegistryConfig
 	credentials     syncconf.CredentialsFile
+	clusterConfig   *config.ClusterConfig
 	remote          Remote
 	destination     Destination
 	retryOptions    *retry.RetryOptions
@@ -40,6 +44,7 @@ type BaseService struct {
 func New(
 	opts syncconf.RegistryConfig,
 	credentialsFilepath string,
+	clusterConfig *config.ClusterConfig,
 	tmpDir string,
 	storeController storage.StoreController,
 	metadb mTypes.MetaDB,
@@ -63,6 +68,10 @@ func New(
 	}
 
 	service.credentials = credentialsFile
+
+	// load the cluster config into the object
+	// can be nil if the user did not configure cluster config
+	service.clusterConfig = clusterConfig
 
 	service.contentManager = NewContentManager(opts.Content, log)
 
@@ -229,10 +238,40 @@ func (service *BaseService) GetNextRepo(lastRepo string) (string, error) {
 			break
 		}
 
+		if service.clusterConfig != nil {
+			targetIdx, targetMember := computeTargetMember(service.clusterConfig, lastRepo)
+
+			// if the target index does not match with the local socket index,
+			// then the local instance is not responsible for syncing the repo and should skip the sync
+			if targetIdx != service.clusterConfig.Proxy.LocalMemberClusterSocketIndex {
+				service.log.Debug().
+					Str(constants.RepositoryLogKey, lastRepo).
+					Str("targetMemberIndex", fmt.Sprintf("%d", targetIdx)).
+					Str("targetMember", targetMember).
+					Msg("skipping sync of repo not managed by local instance")
+
+				continue
+			}
+		}
+
 		matches = service.contentManager.MatchesContent(lastRepo)
 	}
 
 	return lastRepo, nil
+}
+
+// computes the target member using siphash and returns the index and the member
+// siphash was chosen to prevent against hash attacks where an attacker
+// can target all requests to one given instance instead of balancing across the cluster
+// resulting in a Denial-of-Service (DOS).
+// ref: https://en.wikipedia.org/wiki/SipHash
+func computeTargetMember(clusterConfig *config.ClusterConfig, name string) (uint64, string) {
+	h := siphash.New([]byte(clusterConfig.HashKey))
+	h.Write([]byte(name))
+	sum64 := h.Sum64()
+	targetIdx := sum64 % uint64(len(clusterConfig.Members))
+
+	return targetIdx, clusterConfig.Members[targetIdx]
 }
 
 // SyncReference on demand.

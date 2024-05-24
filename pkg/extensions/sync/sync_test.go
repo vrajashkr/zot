@@ -227,6 +227,69 @@ func makeDownstreamServer(
 	return dctlr, destBaseURL, destDir, client
 }
 
+func makeDownstreamServerFixedPort(
+	t *testing.T, port string, secure bool, syncConfig *syncconf.Config, clusterConfig *config.ClusterConfig,
+) (*api.Controller, string, string, *resty.Client) {
+	t.Helper()
+
+	destPort := port
+	destConfig := config.New()
+	client := resty.New()
+
+	var destBaseURL string
+	if secure {
+		destBaseURL = test.GetSecureBaseURL(destPort)
+
+		destConfig.HTTP.TLS = &config.TLSConfig{
+			Cert:   ServerCert,
+			Key:    ServerKey,
+			CACert: CACert,
+		}
+
+		caCert, err := os.ReadFile(CACert)
+		if err != nil {
+			panic(err)
+		}
+
+		caCertPool := x509.NewCertPool()
+		caCertPool.AppendCertsFromPEM(caCert)
+
+		client.SetTLSClientConfig(&tls.Config{RootCAs: caCertPool, MinVersion: tls.VersionTLS12})
+
+		cert, err := tls.LoadX509KeyPair(ClientCert, ClientKey)
+		if err != nil {
+			panic(err)
+		}
+
+		client.SetCertificates(cert)
+	} else {
+		destBaseURL = test.GetBaseURL(destPort)
+	}
+
+	destConfig.HTTP.Port = destPort
+
+	destDir := t.TempDir()
+
+	destConfig.Storage.RootDirectory = destDir
+	destConfig.Storage.Dedupe = false
+	destConfig.Storage.GC = false
+
+	destConfig.Extensions = &extconf.ExtensionConfig{}
+	defVal := true
+	destConfig.Extensions.Search = &extconf.SearchConfig{
+		BaseConfig: extconf.BaseConfig{Enable: &defVal},
+	}
+	destConfig.Extensions.Sync = syncConfig
+	destConfig.Log.Output = path.Join(destDir, "sync.log")
+	destConfig.Log.Level = "debug"
+
+	destConfig.Cluster = clusterConfig
+
+	dctlr := api.NewController(destConfig)
+
+	return dctlr, destBaseURL, destDir, client
+}
+
 func TestOnDemand(t *testing.T) {
 	Convey("Verify sync on demand feature", t, func() {
 		sctlr, srcBaseURL, _, _, srcClient := makeUpstreamServer(t, false, false)
@@ -726,6 +789,180 @@ func TestOnDemand(t *testing.T) {
 			So(err, ShouldBeNil)
 			So(resp.StatusCode(), ShouldEqual, http.StatusNotFound)
 		})
+	})
+}
+
+func TestOnDemandWithScaleOutCluster(t *testing.T) {
+	Convey("Given 2 downstream zots and one upstream, test that the cluster can sync images", t, func() {
+		sctlr, srcBaseURL, _, _, srcClient := makeUpstreamServer(t, false, false)
+		scm := test.NewControllerManager(sctlr)
+		scm.StartAndWait(sctlr.Config.HTTP.Port)
+		defer scm.StopServer()
+
+		// sync config for both downstreams.
+		tlsVerify := false
+		syncRegistryConfig := syncconf.RegistryConfig{
+			Content: []syncconf.Content{
+				{
+					Prefix: testImage,
+				},
+				{
+					Prefix: testCveImage,
+				},
+			},
+			URLs:      []string{srcBaseURL},
+			TLSVerify: &tlsVerify,
+			CertDir:   "",
+			OnDemand:  true,
+		}
+
+		defaultVal := true
+		syncConfig := &syncconf.Config{
+			Enable:     &defaultVal,
+			Registries: []syncconf.RegistryConfig{syncRegistryConfig},
+		}
+
+		// cluster config for both downstream instances.
+		clusterCfgDownstream1 := config.ClusterConfig{
+			Members: []string{
+				"127.0.0.1:43222",
+				"127.0.0.1:43223",
+			},
+			HashKey: "loremipsumdolors",
+		}
+
+		// cluster config for both downstream instances.
+		clusterCfgDownstream2 := clusterCfgDownstream1
+
+		dctrl1, dctrl1BaseURL, destDir1, dstClient1 := makeDownstreamServerFixedPort(
+			t, "43222", false, syncConfig, &clusterCfgDownstream1)
+		dctrl1Scm := test.NewControllerManager(dctrl1)
+
+		dctrl2, dctrl2BaseURL, destDir2, dstClient2 := makeDownstreamServerFixedPort(
+			t, "43223", false, syncConfig, &clusterCfgDownstream2)
+		dctrl2Scm := test.NewControllerManager(dctrl2)
+
+		dctrl1Scm.StartAndWait(dctrl1.Config.HTTP.Port)
+		defer dctrl1Scm.StopServer()
+
+		dctrl2Scm.StartAndWait(dctrl2.Config.HTTP.Port)
+		defer dctrl2Scm.StopServer()
+
+		// Verify that all servers are up.
+		clients := []*resty.Client{srcClient, dstClient1, dstClient2}
+		baseURLs := []string{srcBaseURL, dctrl1BaseURL, dctrl2BaseURL}
+
+		for clientIdx, client := range clients {
+			resp, err := client.R().Get(fmt.Sprintf("%s/v2/", baseURLs[clientIdx]))
+			So(err, ShouldBeNil)
+			So(resp, ShouldNotBeNil)
+			So(resp.StatusCode(), ShouldEqual, http.StatusOK)
+		}
+
+		// Storage for each downstream should not have image data at the start.
+		destDirs := []string{destDir1, destDir2}
+		images := []string{testImage, testCveImage}
+		for _, image := range images {
+			for _, destDir := range destDirs {
+				_, err := os.Stat(path.Join(destDir, image))
+				So(err, ShouldNotBeNil)
+				So(os.IsNotExist(err), ShouldBeTrue)
+			}
+		}
+
+		// Tags list for test image should return 404 at the start.
+		// only hit one instance as the request will get proxied anyway.
+		resp, err := dstClient1.R().Get(
+			fmt.Sprintf("%s/v2/%s/tags/list", dctrl1BaseURL, testImage),
+		)
+		So(err, ShouldBeNil)
+		So(resp, ShouldNotBeNil)
+		So(resp.StatusCode(), ShouldEqual, http.StatusNotFound)
+
+		// Tags List for test CVE image should return 404.
+		// only hit one instance as the request will get proxied anyway.
+		resp, err = dstClient1.R().Get(
+			fmt.Sprintf("%s/v2/%s/tags/list", dctrl1BaseURL, testCveImage),
+		)
+		So(err, ShouldBeNil)
+		So(resp, ShouldNotBeNil)
+		So(resp.StatusCode(), ShouldEqual, http.StatusNotFound)
+
+		// Should successfully sync test image and when trying to load manifest.
+		// only hit one instance as the request will get proxied anyway.
+		resp, err = dstClient1.R().Get(
+			fmt.Sprintf("%s/v2/%s/manifests/%s", dctrl1BaseURL, testImage, testImageTag),
+		)
+		So(err, ShouldBeNil)
+		So(resp.StatusCode(), ShouldEqual, http.StatusOK)
+
+		// Tags list for test image should return data after the sync
+		// only hit one instance as the request will get proxied anyway.
+		// get manifest is hit with a GET request.
+		resp, err = dstClient1.R().Get(
+			fmt.Sprintf("%s/v2/%s/tags/list", dctrl1BaseURL, testImage),
+		)
+		So(err, ShouldBeNil)
+		So(resp, ShouldNotBeNil)
+		So(resp.StatusCode(), ShouldEqual, http.StatusOK)
+
+		var initialTags TagsList
+		err = json.Unmarshal(resp.Body(), &initialTags)
+		So(err, ShouldBeNil)
+		So(initialTags, ShouldEqual, TagsList{
+			Name: testImage,
+			Tags: []string{testImageTag},
+		})
+
+		// Should successfully sync test vulnerable image and when trying to check manifest
+		// check manifest is hit with a HEAD or OPTIONS request.
+		resp, err = dstClient1.R().Head(
+			fmt.Sprintf("%s/v2/%s/manifests/%s", dctrl1BaseURL, testCveImage, testImageTag),
+		)
+		So(err, ShouldBeNil)
+		So(resp.StatusCode(), ShouldEqual, http.StatusOK)
+
+		// Tags List for test CVE image should return data after the sync
+		// only hit one instance as the request will get proxied anyway.
+		// get manifest is hit with a GET request.
+		resp, err = dstClient1.R().Get(
+			fmt.Sprintf("%s/v2/%s/tags/list", dctrl1BaseURL, testCveImage),
+		)
+		So(err, ShouldBeNil)
+		So(resp, ShouldNotBeNil)
+		So(resp.StatusCode(), ShouldEqual, http.StatusOK)
+
+		var cveTagsList TagsList
+		err = json.Unmarshal(resp.Body(), &cveTagsList)
+		So(err, ShouldBeNil)
+		So(cveTagsList, ShouldEqual, TagsList{
+			Name: testCveImage,
+			Tags: []string{testImageTag},
+		})
+
+		// Storage for only one downstream should have the data for test image
+		// with loremipsumdolors as the hashKey,
+		// zot-test is managed by member index 1.
+		// zot-cve-test is managed by member index 0.
+
+		_, err = os.Stat(path.Join(destDir1, testImage))
+		So(err, ShouldNotBeNil)
+		So(os.IsNotExist(err), ShouldBeTrue)
+
+		_, err = os.Stat(path.Join(destDir2, testImage))
+		So(err, ShouldBeNil)
+
+		// Storage for only one downstream should have the data for the test cve image
+		// with loremipsumdolors as the hashKey,
+		// zot-test is managed by member index 1.
+		// zot-cve-test is managed by member index 0.
+
+		_, err = os.Stat(path.Join(destDir1, testCveImage))
+		So(err, ShouldBeNil)
+
+		_, err = os.Stat(path.Join(destDir2, testCveImage))
+		So(err, ShouldNotBeNil)
+		So(os.IsNotExist(err), ShouldBeTrue)
 	})
 }
 
@@ -1415,6 +1652,119 @@ func TestPeriodically(t *testing.T) {
 
 			waitSyncFinish(dctlr.Config.Log.Output)
 		})
+	})
+}
+
+func TestPeriodicallyWithScaleOutCluster(t *testing.T) {
+	Convey("Given a zot cluster with periodic sync enabled, test that instances sync only managed repos", t, func() {
+		updateDuration, _ := time.ParseDuration("30m")
+		const zotAlpineTestImageName = "zot-alpine-test"
+
+		sctlr, srcBaseURL, _, _, _ := makeUpstreamServer(t, false, false)
+
+		scm := test.NewControllerManager(sctlr)
+		scm.StartAndWait(sctlr.Config.HTTP.Port)
+		defer scm.StopServer()
+
+		// Upload additional image to the upstream.
+		// Upload has to be done before starting the downstreams.
+		sampleImage := CreateRandomImage()
+		err := UploadImage(sampleImage, srcBaseURL, zotAlpineTestImageName, "0.0.1")
+		So(err, ShouldBeNil)
+
+		tlsVerify := false
+		maxRetries := 2
+		delay := 2 * time.Second
+
+		syncRegistryConfig := syncconf.RegistryConfig{
+			Content: []syncconf.Content{
+				{
+					Prefix: zotAlpineTestImageName,
+				},
+				{
+					Prefix: testImage,
+				},
+				{
+					Prefix: testCveImage,
+				},
+			},
+			URLs:         []string{srcBaseURL},
+			PollInterval: updateDuration,
+			TLSVerify:    &tlsVerify,
+			MaxRetries:   &maxRetries,
+			RetryDelay:   &delay,
+		}
+
+		defaultVal := true
+		syncConfig := &syncconf.Config{
+			Enable:     &defaultVal,
+			Registries: []syncconf.RegistryConfig{syncRegistryConfig},
+		}
+
+		// add scale out cluster config.
+		// we don't need to start multiple downstream instances as we want to just check that
+		// a given downstream instance skips images that it does not manage.
+
+		// with loremipsumdolors as the hashKey,
+		// zot-test is managed by member index 1.
+		// zot-cve-test is managed by member index 0.
+		// zot-alpine-test is managed by member index 1.
+		clusterCfg := config.ClusterConfig{
+			Members: []string{
+				"127.0.0.1:100",
+				"127.0.0.1:42000",
+			},
+			HashKey: "loremipsumdolors",
+		}
+
+		dctlr, destBaseURL, destDir, destClient := makeDownstreamServerFixedPort(t, "42000", false, syncConfig, &clusterCfg)
+
+		dcm := test.NewControllerManager(dctlr)
+		dcm.StartAndWait(dctlr.Config.HTTP.Port)
+		defer dcm.StopServer()
+
+		// Downstream should not have any of the images in its storage
+		images := []string{testImage, testCveImage, zotAlpineTestImageName}
+
+		for _, image := range images {
+			_, err := os.Stat(path.Join(destDir, image))
+			So(err, ShouldNotBeNil)
+			So(os.IsNotExist(err), ShouldBeTrue)
+		}
+
+		// wait for generator to complete
+		waitSyncFinish(dctlr.Config.Log.Output)
+
+		// Downstream should sync only expected images from the upstream
+		expectedImages := []string{zotAlpineTestImageName, testImage}
+
+		for _, expected := range expectedImages {
+			for {
+				resp, err := destClient.R().Get(fmt.Sprintf("%s/v2/%s/tags/list", destBaseURL, expected))
+				So(err, ShouldBeNil)
+
+				var destTagsList TagsList
+				err = json.Unmarshal(resp.Body(), &destTagsList)
+				So(err, ShouldBeNil)
+
+				if len(destTagsList.Tags) > 0 {
+					break
+				}
+
+				time.Sleep(500 * time.Millisecond)
+			}
+		}
+
+		// Only the zot-test and zot-alpine-test images should be downloaded
+		for _, expected := range expectedImages {
+			_, err = os.Stat(path.Join(destDir, expected))
+			So(err, ShouldBeNil)
+		}
+
+		// The test cve image should not be downloaded
+		_, err = os.Stat(path.Join(destDir, testCveImage))
+		So(err, ShouldNotBeNil)
+		So(os.IsNotExist(err), ShouldBeTrue)
 	})
 }
 
