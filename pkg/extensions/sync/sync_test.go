@@ -822,7 +822,7 @@ func TestOnDemandWithScaleOutCluster(t *testing.T) {
 			Registries: []syncconf.RegistryConfig{syncRegistryConfig},
 		}
 
-		// cluster config for both downstream instances.
+		// cluster config for member 1.
 		clusterCfgDownstream1 := config.ClusterConfig{
 			Members: []string{
 				"127.0.0.1:43222",
@@ -831,7 +831,7 @@ func TestOnDemandWithScaleOutCluster(t *testing.T) {
 			HashKey: "loremipsumdolors",
 		}
 
-		// cluster config for both downstream instances.
+		// cluster config copied for member 2.
 		clusterCfgDownstream2 := clusterCfgDownstream1
 
 		dctrl1, dctrl1BaseURL, destDir1, dstClient1 := makeDownstreamServerFixedPort(
@@ -848,7 +848,7 @@ func TestOnDemandWithScaleOutCluster(t *testing.T) {
 		dctrl2Scm.StartAndWait(dctrl2.Config.HTTP.Port)
 		defer dctrl2Scm.StopServer()
 
-		// Verify that all servers are up.
+		// verify that all servers are up.
 		clients := []*resty.Client{srcClient, dstClient1, dstClient2}
 		baseURLs := []string{srcBaseURL, dctrl1BaseURL, dctrl2BaseURL}
 
@@ -859,7 +859,7 @@ func TestOnDemandWithScaleOutCluster(t *testing.T) {
 			So(resp.StatusCode(), ShouldEqual, http.StatusOK)
 		}
 
-		// Storage for each downstream should not have image data at the start.
+		// storage for each downstream should not have image data at the start.
 		destDirs := []string{destDir1, destDir2}
 		images := []string{testImage, testCveImage}
 		for _, image := range images {
@@ -870,7 +870,7 @@ func TestOnDemandWithScaleOutCluster(t *testing.T) {
 			}
 		}
 
-		// Tags list for test image should return 404 at the start.
+		// tags list for test image should return 404 at the start.
 		// only hit one instance as the request will get proxied anyway.
 		resp, err := dstClient1.R().Get(
 			fmt.Sprintf("%s/v2/%s/tags/list", dctrl1BaseURL, testImage),
@@ -879,7 +879,7 @@ func TestOnDemandWithScaleOutCluster(t *testing.T) {
 		So(resp, ShouldNotBeNil)
 		So(resp.StatusCode(), ShouldEqual, http.StatusNotFound)
 
-		// Tags List for test CVE image should return 404.
+		// tags List for test CVE image should return 404.
 		// only hit one instance as the request will get proxied anyway.
 		resp, err = dstClient1.R().Get(
 			fmt.Sprintf("%s/v2/%s/tags/list", dctrl1BaseURL, testCveImage),
@@ -888,7 +888,7 @@ func TestOnDemandWithScaleOutCluster(t *testing.T) {
 		So(resp, ShouldNotBeNil)
 		So(resp.StatusCode(), ShouldEqual, http.StatusNotFound)
 
-		// Should successfully sync test image and when trying to load manifest.
+		// should successfully sync zot-test image when trying to load manifest.
 		// only hit one instance as the request will get proxied anyway.
 		resp, err = dstClient1.R().Get(
 			fmt.Sprintf("%s/v2/%s/manifests/%s", dctrl1BaseURL, testImage, testImageTag),
@@ -896,7 +896,7 @@ func TestOnDemandWithScaleOutCluster(t *testing.T) {
 		So(err, ShouldBeNil)
 		So(resp.StatusCode(), ShouldEqual, http.StatusOK)
 
-		// Tags list for test image should return data after the sync
+		// tags list for test image should return data after the sync.
 		// only hit one instance as the request will get proxied anyway.
 		// get manifest is hit with a GET request.
 		resp, err = dstClient1.R().Get(
@@ -914,7 +914,7 @@ func TestOnDemandWithScaleOutCluster(t *testing.T) {
 			Tags: []string{testImageTag},
 		})
 
-		// Should successfully sync test vulnerable image and when trying to check manifest
+		// should successfully sync test vulnerable image when trying to check manifest.
 		// check manifest is hit with a HEAD or OPTIONS request.
 		resp, err = dstClient1.R().Head(
 			fmt.Sprintf("%s/v2/%s/manifests/%s", dctrl1BaseURL, testCveImage, testImageTag),
@@ -922,7 +922,7 @@ func TestOnDemandWithScaleOutCluster(t *testing.T) {
 		So(err, ShouldBeNil)
 		So(resp.StatusCode(), ShouldEqual, http.StatusOK)
 
-		// Tags List for test CVE image should return data after the sync
+		// tags list for test CVE image should return data after the sync.
 		// only hit one instance as the request will get proxied anyway.
 		// get manifest is hit with a GET request.
 		resp, err = dstClient1.R().Get(
@@ -940,7 +940,7 @@ func TestOnDemandWithScaleOutCluster(t *testing.T) {
 			Tags: []string{testImageTag},
 		})
 
-		// Storage for only one downstream should have the data for test image
+		// storage for only one downstream should have the data for test image.
 		// with loremipsumdolors as the hashKey,
 		// zot-test is managed by member index 1.
 		// zot-cve-test is managed by member index 0.
@@ -952,7 +952,7 @@ func TestOnDemandWithScaleOutCluster(t *testing.T) {
 		_, err = os.Stat(path.Join(destDir2, testImage))
 		So(err, ShouldBeNil)
 
-		// Storage for only one downstream should have the data for the test cve image
+		// storage for only one downstream should have the data for the test cve image.
 		// with loremipsumdolors as the hashKey,
 		// zot-test is managed by member index 1.
 		// zot-cve-test is managed by member index 0.
@@ -1666,8 +1666,8 @@ func TestPeriodicallyWithScaleOutCluster(t *testing.T) {
 		scm.StartAndWait(sctlr.Config.HTTP.Port)
 		defer scm.StopServer()
 
-		// Upload additional image to the upstream.
-		// Upload has to be done before starting the downstreams.
+		// upload additional image to the upstream.
+		// upload has to be done before starting the downstreams.
 		sampleImage := CreateRandomImage()
 		err := UploadImage(sampleImage, srcBaseURL, zotAlpineTestImageName, "0.0.1")
 		So(err, ShouldBeNil)
@@ -1723,7 +1723,7 @@ func TestPeriodicallyWithScaleOutCluster(t *testing.T) {
 		dcm.StartAndWait(dctlr.Config.HTTP.Port)
 		defer dcm.StopServer()
 
-		// Downstream should not have any of the images in its storage
+		// downstream should not have any of the images in its storage.
 		images := []string{testImage, testCveImage, zotAlpineTestImageName}
 
 		for _, image := range images {
@@ -1732,10 +1732,10 @@ func TestPeriodicallyWithScaleOutCluster(t *testing.T) {
 			So(os.IsNotExist(err), ShouldBeTrue)
 		}
 
-		// wait for generator to complete
+		// wait for generator to complete.
 		waitSyncFinish(dctlr.Config.Log.Output)
 
-		// Downstream should sync only expected images from the upstream
+		// downstream should sync only expected images from the upstream.
 		expectedImages := []string{zotAlpineTestImageName, testImage}
 
 		for _, expected := range expectedImages {
@@ -1755,13 +1755,13 @@ func TestPeriodicallyWithScaleOutCluster(t *testing.T) {
 			}
 		}
 
-		// Only the zot-test and zot-alpine-test images should be downloaded
+		// only the zot-test and zot-alpine-test images should be downloaded.
 		for _, expected := range expectedImages {
 			_, err = os.Stat(path.Join(destDir, expected))
 			So(err, ShouldBeNil)
 		}
 
-		// The test cve image should not be downloaded
+		// the test cve image should not be downloaded.
 		_, err = os.Stat(path.Join(destDir, testCveImage))
 		So(err, ShouldNotBeNil)
 		So(os.IsNotExist(err), ShouldBeTrue)

@@ -10,12 +10,12 @@ import (
 
 	"github.com/containers/common/pkg/retry"
 	"github.com/containers/image/v5/copy"
-	"github.com/dchest/siphash"
 	"github.com/opencontainers/go-digest"
 
 	zerr "zotregistry.dev/zot/errors"
 	"zotregistry.dev/zot/pkg/api/config"
 	"zotregistry.dev/zot/pkg/api/constants"
+	"zotregistry.dev/zot/pkg/cluster"
 	"zotregistry.dev/zot/pkg/common"
 	syncconf "zotregistry.dev/zot/pkg/extensions/config/sync"
 	client "zotregistry.dev/zot/pkg/extensions/sync/httpclient"
@@ -239,7 +239,8 @@ func (service *BaseService) GetNextRepo(lastRepo string) (string, error) {
 		}
 
 		if service.clusterConfig != nil {
-			targetIdx, targetMember := computeTargetMember(service.clusterConfig, lastRepo)
+			targetIdx, targetMember := cluster.ComputeTargetMember(
+				service.clusterConfig.HashKey, service.clusterConfig.Members, lastRepo)
 
 			// if the target index does not match with the local socket index,
 			// then the local instance is not responsible for syncing the repo and should skip the sync
@@ -258,20 +259,6 @@ func (service *BaseService) GetNextRepo(lastRepo string) (string, error) {
 	}
 
 	return lastRepo, nil
-}
-
-// computes the target member using siphash and returns the index and the member
-// siphash was chosen to prevent against hash attacks where an attacker
-// can target all requests to one given instance instead of balancing across the cluster
-// resulting in a Denial-of-Service (DOS).
-// ref: https://en.wikipedia.org/wiki/SipHash
-func computeTargetMember(clusterConfig *config.ClusterConfig, name string) (uint64, string) {
-	h := siphash.New([]byte(clusterConfig.HashKey))
-	h.Write([]byte(name))
-	sum64 := h.Sum64()
-	targetIdx := sum64 % uint64(len(clusterConfig.Members))
-
-	return targetIdx, clusterConfig.Members[targetIdx]
 }
 
 // SyncReference on demand.
