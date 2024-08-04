@@ -3879,7 +3879,7 @@ func TestGlobalSearch(t *testing.T) {
 
 func TestGlobalSearchWithScaleOutProxyLocalStorage(t *testing.T) {
 
-	// When there are 2 zot instances having one image each, the same GlobalSearch query should
+	// When there are 2 zot instances, the same GlobalSearch query should
 	// return aggregated data from both instances when both instances are queried.
 	Convey("In a local scale-out cluster with 2 members, should return correct data for GlobalSearch", t, func() {
 		numMembers := 2
@@ -3921,7 +3921,6 @@ func TestGlobalSearchWithScaleOutProxyLocalStorage(t *testing.T) {
 		for _, repoName := range reposToTest {
 			img := CreateRandomImage()
 
-			// Upload to each instance based on loop counter
 			err := UploadImage(img, test.GetBaseURL(ports[0]), repoName, "1.0")
 			So(err, ShouldBeNil)
 		}
